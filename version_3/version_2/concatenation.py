@@ -9,6 +9,6 @@ for file in csv_files:
     combined_data = pd.concat([combined_data, data])
 
 combined_data.sort_values(by='R1_1', inplace=False)
-combined_data.to_csv('model.csv', index=False)
+combined_data.to_csv('model_new.csv', index=False)
 
 print("Done!")
