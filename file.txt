@@ -1,66 +1,155 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout, BatchNormalization
 from sklearn.preprocessing import StandardScaler
-from keras.utils import to_categorical
-from keras.callbacks import EarlyStopping, ModelCheckpoint
-from keras.optimizers import Adam
-from keras.regularizers import l2
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.metrics import accuracy_score
+from tensorflow.keras.regularizers import L2
 
 # Daten einlesen
-data = pd.read_csv('model.csv')
+data = pd.read_csv('model_new.csv')
 
+data['activity'].value_counts().plot(kind='bar', title='Activity type')
+
+def plot_activity(activity, df):
+    data = df[df['activity'] == activity][['R1_1', 'R1_2', 'R1_3', 'R1_4', 'R1_5', 'R1_6', 'R3_1', 'R3_2', 'R3_3', 'R3_4', 'R3_5', 'R3_6', 'R4_1', 'R4_2', 'R4_3', 'R4_4', 'R4_5', 'R4_6']]
+    axis = data.plot(subplots=True, figsize=(16, 12), title=activity)
+    for ax in axis:
+        ax.legend(loc='lower left', bbox_to_anchor=(1.0, 0.5))
+
+plot_activity("drilling", data)
+
+
+plot_activity("pause", data)
+
+# Preprocessing
 X = data.drop(['class', 'activity'], axis=1)
 y = data['class']
+activity_labels = data['activity']
+num_classes = 3
 
-# Feature Scaling
-scaler = StandardScaler()
-X = scaler.fit_transform(X)
+def create_sliding_windows(data, labels, activity_labels, window_size, step_size):
+    if len(data) < window_size or len(labels) < window_size or len(activity_labels) < window_size:
+        raise ValueError("Input data are shorter than window")
 
-# Train-Test-Split
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    num_windows = (len(data) - window_size) // step_size + 1
 
-# Definiere Callbacks
-early_stopping = EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True)
-model_checkpoint = ModelCheckpoint('best_model.h5', monitor='val_accuracy', save_best_only=True)
+    X_windows = np.array([data[i:i+window_size] for i in range(0, len(data) - window_size + 1, step_size)])
+    y_windows = np.array([labels[i+window_size-1] for i in range(0, len(labels) - window_size + 1, step_size)])
+    activity_labels_windows = np.array([activity_labels[i:i+window_size] for i in range(0, len(activity_labels) - window_size + 1, step_size)])
+    
+    return X_windows, y_windows, activity_labels_windows
 
-model = Sequential()
-model.add(LSTM(512, input_shape=(X_train.shape[1], 1), return_sequences=True, kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.2))
-model.add(LSTM(256, return_sequences=True, kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.2))
-model.add(LSTM(128, kernel_regularizer=l2(0.001)))
-model.add(Dropout(0.2))
-model.add(Dense(3, activation='softmax'))
+window_size =55
+step_size =10
+X_windows, y_windows, activity_labels_windows = create_sliding_windows(X, y, activity_labels, window_size, step_size)
 
-# Batch-Normalization hinzufügen
-model.add(BatchNormalization())
 
-model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=0.001), metrics=['accuracy'])
+# Print the contents of each sliding window
+for i, window in enumerate(X_windows):
+    print(f"Window {i+1}:\n{window}")
+    print("=" * 80)
 
-print(model.summary())
 
-# y_train und y_test in One-Hot kodieren
-y_train_encoded = to_categorical(y_train, num_classes=3)
-y_test_encoded = to_categorical(y_test, num_classes=3)
-
-history = model.fit(
-    X_train,
-    y_train_encoded,
-    batch_size=32,
-    epochs=300,
-    validation_data=(X_test, y_test_encoded),
-    callbacks=[early_stopping, model_checkpoint]
+# Split data
+X_train, X_test, y_train, y_test, activity_labels_train, activity_labels_test = train_test_split(
+    X_windows, y_windows, activity_labels_windows,
+    test_size=0.2, stratify=y_windows
 )
 
-# Modell evaluieren
-model.load_weights('best_model.h5')
 
-y_pred = model.predict(X_test)
-y_pred_labels = np.argmax(y_pred, axis=1)
+# Standardize features
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train.reshape(-1, X.shape[1])).reshape(X_train.shape)
+X_test = scaler.transform(X_test.reshape(-1, X.shape[1])).reshape(X_test.shape)
 
-accuracy = accuracy_score(y_test, y_pred_labels)
-print("Test Genauigkeit:", accuracy)
+
+# Build LSTM model
+model = Sequential([
+    LSTM(64, input_shape=(window_size, X_train.shape[2]), return_sequences=True, activation='relu'),
+    Dropout(0.2),
+    LSTM(32, activation='relu'),
+    Dense(num_classes, activation='softmax')
+])
+
+# Compile the model
+optimizer = Adam(learning_rate=0.001)
+model.compile(optimizer=optimizer, loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+print(model.summary())
+
+# Define Callbacks
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+]
+
+# Train the model
+history = model.fit(
+    X_train, y_train,
+    batch_size=64,
+    epochs=1000,
+    validation_split=0.1,
+    callbacks=callbacks,
+    verbose=1
+)
+
+# Evaluate the model
+test_loss, test_acc = model.evaluate(X_test, y_test)
+print("Test Accuracy:", test_acc)
+
+# Predict class labels
+y_pred_probs = model.predict(X_test)
+y_pred_labels = np.argmax(y_pred_probs, axis=1)
+y_true_labels = y_test
+
+# Print predicted and true class labels
+output_lines = [
+    f"Predicted Class: {pred}    True Class: {true}"
+    for pred, true in zip(y_pred_labels, y_true_labels)
+]
+
+
+output = "\n".join(output_lines)
+print(output)
+
+# Calculate accuracy using accuracy_score
+accuracy = accuracy_score(y_true_labels, y_pred_labels)
+print("Total:", len(y_true_labels))
+print("Accuracy:", accuracy)
+
+
+plt.figure(figsize=(10, 6))
+
+legend_labels = ["True Activity", "Predicted Activity"]
+
+combined_true_labels = np.concatenate(activity_labels_test)
+combined_pred_labels = []
+
+for pred_labels in y_pred_labels:
+    if np.isscalar(pred_labels):
+        pred_labels = np.array([pred_labels])
+    combined_pred_labels.extend(pred_labels)
+
+combined_pred_labels = np.array(combined_pred_labels)
+
+# True activity
+plt.subplot(2, 1, 1) 
+plt.plot(combined_true_labels)
+plt.title("True Activity")
+plt.ylabel("Activity")
+
+# predicted activity
+plt.subplot(2, 1, 2) 
+plt.plot(combined_pred_labels)
+plt.title("Predicted Activity")
+plt.xlabel("timestamp")
+plt.ylabel("Activity")
+
+plt.tight_layout()
+plt.show()
+
+
+
